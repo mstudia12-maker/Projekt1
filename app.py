@@ -4,6 +4,8 @@ AI Finance Guard — dashboard Streamlit (prognozy CatBoost, serwis, plan produk
 
 from __future__ import annotations
 
+import hmac
+import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -15,6 +17,59 @@ import streamlit as st
 from afg.pipeline import PipelineConfig, run_pipeline
 
 BASE = Path(__file__).resolve().parent
+
+
+def check_password() -> bool:
+    """Brama z hasłem — hasło pobierane z st.secrets['app_password'].
+
+    Jeśli w secrets nie ma 'app_password', brama jest wyłączona (tryb lokalny).
+    """
+    expected = st.secrets.get("app_password", None) if hasattr(st, "secrets") else None
+    if not expected:
+        return True
+
+    if st.session_state.get("password_ok", False):
+        return True
+
+    def _submit():
+        entered = st.session_state.get("password_input", "")
+        if hmac.compare_digest(str(entered), str(expected)):
+            st.session_state["password_ok"] = True
+            st.session_state["password_input"] = ""
+        else:
+            st.session_state["password_ok"] = False
+
+    st.markdown(
+        """
+        <div style="max-width:420px;margin:3rem auto;padding:2rem;
+                    background:rgba(30,41,59,0.6);border-radius:16px;
+                    border:1px solid rgba(71,85,105,0.5);">
+            <h2 style="margin:0 0 1rem 0;color:#f8fafc;">Dostęp ograniczony</h2>
+            <p style="color:#94a3b8;margin:0 0 1rem 0;">
+                Podaj hasło, aby otworzyć panel AI Finance Guard.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.text_input(
+        "Hasło",
+        type="password",
+        key="password_input",
+        on_change=_submit,
+        label_visibility="collapsed",
+        placeholder="Hasło",
+    )
+    if "password_ok" in st.session_state and not st.session_state["password_ok"]:
+        st.error("Niepoprawne hasło.")
+    return False
+
+
+def save_upload_to_tmp(uploaded_file, tmp_dir: Path, filename: str) -> Path:
+    """Zapisz wgrany plik do katalogu tymczasowego i zwróć ścieżkę."""
+    target = tmp_dir / filename
+    target.write_bytes(uploaded_file.getvalue())
+    return target
 
 
 def css():
@@ -105,11 +160,6 @@ def coverage_by_horizon(bt_cal: pd.DataFrame) -> pd.DataFrame | None:
 
 
 def main():
-    if "result" not in st.session_state:
-        st.session_state["result"] = None
-    if "error" not in st.session_state:
-        st.session_state["error"] = None
-
     st.set_page_config(
         page_title="AI Finance Guard",
         page_icon="🛡️",
@@ -117,6 +167,16 @@ def main():
         initial_sidebar_state="expanded",
     )
     css()
+
+    if not check_password():
+        st.stop()
+
+    if "result" not in st.session_state:
+        st.session_state["result"] = None
+    if "error" not in st.session_state:
+        st.session_state["error"] = None
+    if "tmp_out_dir" not in st.session_state:
+        st.session_state["tmp_out_dir"] = tempfile.mkdtemp(prefix="afg_out_")
 
     st.markdown(
         """
@@ -131,11 +191,22 @@ def main():
 
     with st.sidebar:
         st.header("Dane i parametry ML")
-        default_feat = BASE / "AFG_ML_FEATUREONLY_SKU_EOM_STRICT.csv"
-        default_train = BASE / "AFG_ML_TRAIN_SKU_EOM_STRICT.csv"
-        feat_path = st.text_input("Plik cech (CSV)", str(default_feat))
-        train_path = st.text_input("Plik treningowy (CSV)", str(default_train))
-        out_dir = st.text_input("Katalog wyjściowy (out)", str(BASE / "out"))
+        st.caption(
+            "Wgraj dwa pliki CSV. Nie są zapisywane na stałe — "
+            "żyją tylko w pamięci bieżącej sesji."
+        )
+        feat_upload = st.file_uploader(
+            "Plik cech (FEATUREONLY)",
+            type=["csv"],
+            key="feat_upload",
+            help="AFG_ML_FEATUREONLY_SKU_EOM_STRICT.csv",
+        )
+        train_upload = st.file_uploader(
+            "Plik treningowy (TRAIN)",
+            type=["csv"],
+            key="train_upload",
+            help="AFG_ML_TRAIN_SKU_EOM_STRICT.csv",
+        )
 
         st.subheader("CatBoost")
         n_cutoffs = st.slider("Liczba cutoffów (backtest)", 1, 12, 3)
@@ -148,12 +219,24 @@ def main():
             help="Wyłącz, aby szybciej zobaczyć backtest i kalibrację bez ponownego treningu 6×2 modeli na pełnej historii.",
         )
 
-        run_btn = st.button("Uruchom pipeline", type="primary", use_container_width=True)
+        run_btn = st.button(
+            "Uruchom pipeline",
+            type="primary",
+            use_container_width=True,
+            disabled=(feat_upload is None or train_upload is None),
+        )
+        if feat_upload is None or train_upload is None:
+            st.caption("⬆️ Wgraj oba pliki CSV, aby odblokować przycisk.")
 
     if run_btn:
+        tmp_in = Path(tempfile.mkdtemp(prefix="afg_in_"))
+        feat_path = save_upload_to_tmp(feat_upload, tmp_in, "feature.csv")
+        train_path = save_upload_to_tmp(train_upload, tmp_in, "train.csv")
+        out_dir = st.session_state["tmp_out_dir"]
+
         cfg = PipelineConfig(
-            feature_path=feat_path,
-            train_path=train_path,
+            feature_path=str(feat_path),
+            train_path=str(train_path),
             out_dir=out_dir,
             n_cutoffs=n_cutoffs,
             cb_iterations=cb_iterations,
@@ -176,7 +259,10 @@ def main():
     res = st.session_state.get("result")
     if res is None:
         st.info(
-            "Wgraj ścieżki do plików CSV (domyślnie pliki z folderu projektu) i kliknij **Uruchom pipeline**."
+            "👋 **Start:** wgraj w panelu po lewej dwa pliki CSV "
+            "(`FEATUREONLY` i `TRAIN`), dostrój parametry CatBoost, "
+            "a następnie kliknij **Uruchom pipeline**. "
+            "Dane nie są zapisywane na serwerze — istnieją tylko w pamięci Twojej sesji."
         )
         return
 

@@ -1,0 +1,42 @@
+# Dane wra\u017cliwe \u2014 nigdy nie commitujemy CSV ani wynik\u00f3w
+*.csv
+out/
+out_test/
+
+# Sekrety Streamlita (hasla, tokeny)
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenv
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Modele/artefakty ML
+*.cbm
+*.pkl
+*.joblib
+*.onnx
+mlruns/
+wandb/
+
+# Logi i tymczasowe
+*.log
+tmp/
+.tmp/
